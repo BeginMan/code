@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 #coding=utf-8
 #beanstalkc源码分析
-#方朋：2015-01-09
+#2015-01-09
 
 """beanstalkc - A beanstalkd Client Library for Python"""
 
