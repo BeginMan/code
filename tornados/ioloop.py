@@ -1,29 +1,13 @@
-#!/usr/bin/env python
-#
-# Copyright 2009 Facebook
-#
-# Licensed under the Apache License, Version 2.0 (the "License"); you may
-# not use this file except in compliance with the License. You may obtain
-# a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
-# WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
-# License for the specific language governing permissions and limitations
-# under the License.
+# coding=utf-8
+"""
+非阻塞socket I/O 事件循环
 
-"""An I/O event loop for non-blocking sockets.
+典型的app就是使用一个`IOLoop`对象在`IOLoop.instance`单例中.
+`IOLoop.start`方法通常在``main()``函数后被调用。
+非典型的应用则是使用多个`IOLoop`, 例如每个线程或每个`unittest`单元测试对应一个`IOLoop`
 
-Typical applications will use a single `IOLoop` object, in the
-`IOLoop.instance` singleton.  The `IOLoop.start` method should usually
-be called at the end of the ``main()`` function.  Atypical applications may
-use more than one `IOLoop`, such as one `IOLoop` per thread, or per `unittest`
-case.
-
-In addition to I/O events, the `IOLoop` can also schedule time-based events.
-`IOLoop.add_timeout` is a non-blocking alternative to `time.sleep`.
+除了I/O事件之外, `IOLoop`也可基于时间事件调度。
+`IOLoop.add_timeout` 是`time.sleep`的非阻塞版本。
 """
 
 from __future__ import absolute_import, division, print_function, with_statement
@@ -69,13 +53,8 @@ class TimeoutError(Exception):
 
 
 class IOLoop(Configurable):
-    """A level-triggered I/O loop.
-
-    We use ``epoll`` (Linux) or ``kqueue`` (BSD and Mac OS X) if they
-    are available, or else we fall back on select(). If you are
-    implementing a system that needs to handle thousands of
-    simultaneous connections, you should use a system that supports
-    either ``epoll`` or ``kqueue``.
+    """水平触发的I/O loop
+    ``epoll`` or ``kqueue``, ``select``的调度
 
     Example usage for a simple TCP server:
 
@@ -124,7 +103,7 @@ class IOLoop(Configurable):
        Added the ``make_current`` keyword argument to the `IOLoop`
        constructor.
     """
-    # Constants from the epoll module
+    # epoll 常量
     _EPOLLIN = 0x001
     _EPOLLPRI = 0x002
     _EPOLLOUT = 0x004
@@ -140,19 +119,17 @@ class IOLoop(Configurable):
     WRITE = _EPOLLOUT
     ERROR = _EPOLLERR | _EPOLLHUP
 
-    # Global lock for creating global IOLoop instance
+    # 创建全局 IOLoop实例的全局锁
     _instance_lock = threading.Lock()
 
-    _current = threading.local()
+    _current = threading.local()        # 线程变量,生命周期是在线程里
+                                        # 在当前线程保存一个全局值，并且各自线程互不干扰
 
     @staticmethod
     def instance():
-        """Returns a global `IOLoop` instance.
-
-        Most applications have a single, global `IOLoop` running on the
-        main thread.  Use this method to get this instance from
-        another thread.  In most other cases, it is better to use `current()`
-        to get the current thread's `IOLoop`.
+        """
+        返回一个全局`IOLoop`实例
+        通过线程锁实现线程同步保证多线程环境下的单例
         """
         if not hasattr(IOLoop, "_instance"):
             with IOLoop._instance_lock:
@@ -163,7 +140,7 @@ class IOLoop(Configurable):
 
     @staticmethod
     def initialized():
-        """Returns true if the singleton instance has been created."""
+        """返回true如果单例已经存在"""
         return hasattr(IOLoop, "_instance")
 
     def install(self):
@@ -191,22 +168,10 @@ class IOLoop(Configurable):
 
     @staticmethod
     def current(instance=True):
-        """Returns the current thread's `IOLoop`.
+        """返回当前线程的`IOLoop`
 
-        If an `IOLoop` is currently running or has been marked as
-        current by `make_current`, returns that instance.  If there is
-        no current `IOLoop`, returns `IOLoop.instance()` (i.e. the
-        main thread's `IOLoop`, creating one if necessary) if ``instance``
-        is true.
-
-        In general you should use `IOLoop.current` as the default when
-        constructing an asynchronous object, and use `IOLoop.instance`
-        when you mean to communicate to the main thread from a different
-        one.
-
-        .. versionchanged:: 4.1
-           Added ``instance`` argument to control the fallback to
-           `IOLoop.instance()`.
+        当构造一个异步对象时使用current方法
+        当在主线程和其他线程通信时使用instance方法
         """
         current = getattr(IOLoop._current, "instance", None)
         if current is None and instance:
@@ -249,6 +214,11 @@ class IOLoop(Configurable):
         return SelectIOLoop
 
     def initialize(self, make_current=None):
+        """继承父类Configurable时, 执行父类__new___构造方法
+
+        该父类执行逻辑包括initialize方法的执行.
+        这里子类实现initialize具体的逻辑: 构造当前IOLoop对象
+        """
         if make_current is None:
             if IOLoop.current(instance=False) is None:
                 self.make_current()
@@ -258,108 +228,61 @@ class IOLoop(Configurable):
             self.make_current()
 
     def close(self, all_fds=False):
-        """Closes the `IOLoop`, freeing any resources used.
+        """关闭`IOLoop`,释放所有占用的资源
 
-        If ``all_fds`` is true, all file descriptors registered on the
-        IOLoop will be closed (not just the ones created by the
-        `IOLoop` itself).
+        这是一个抽象方法。
 
-        Many applications will only use a single `IOLoop` that runs for the
-        entire lifetime of the process.  In that case closing the `IOLoop`
-        is not necessary since everything will be cleaned up when the
-        process exits.  `IOLoop.close` is provided mainly for scenarios
-        such as unit tests, which create and destroy a large number of
-        ``IOLoops``.
+        如果`all_fds`为true, 所有注册在IOLoop上的文件描述符都将被关闭(
+        不仅仅是`IOLoop`自身的创建)
 
-        An `IOLoop` must be completely stopped before it can be closed.  This
-        means that `IOLoop.stop()` must be called *and* `IOLoop.start()` must
-        be allowed to return before attempting to call `IOLoop.close()`.
-        Therefore the call to `close` will usually appear just after
-        the call to `start` rather than near the call to `stop`.
+        许多应用程序将只使用一个`IOLoop`在整个进程的生命周期中。这种情况下关闭`IOLoop`
+        没有必要因为一切都会进程退出时清理干净。
+        `IOLoop.close`主要应用场景是提供接单元测试等创建和摧毁大量IOLoops
 
-        .. versionchanged:: 3.1
-           If the `IOLoop` implementation supports non-integer objects
-           for "file descriptors", those objects will have their
-           ``close`` method when ``all_fds`` is true.
+        `IOLoop`必须完全stop后才可以被关闭,这意味着`IOLoop.stop()`方法必须被调用,
+        且`IOLoop.start()`方法必须被允许返回在尝试调用`IOLoop.close()`之前
         """
         raise NotImplementedError()
 
     def add_handler(self, fd, handler, events):
-        """Registers the given handler to receive the given events for ``fd``.
+        """fd注册handler
 
-        The ``fd`` argument may either be an integer file descriptor or
-        a file-like object with a ``fileno()`` method (and optionally a
-        ``close()`` method, which may be called when the `IOLoop` is shut
-        down).
+        `fd`:任何有`fileno()`的file-like对象
+        `events`: 就是上面的READ,WRITE,ERROR
 
-        The ``events`` argument is a bitwise or of the constants
-        ``IOLoop.READ``, ``IOLoop.WRITE``, and ``IOLoop.ERROR``.
-
-        When an event occurs, ``handler(fd, events)`` will be run.
-
-        .. versionchanged:: 4.0
-           Added the ability to pass file-like objects in addition to
-           raw file descriptors.
+        当事件触发后, `handler(fd, events)` 将被执行
         """
         raise NotImplementedError()
 
     def update_handler(self, fd, events):
-        """Changes the events we listen for ``fd``.
-
-        .. versionchanged:: 4.0
-           Added the ability to pass file-like objects in addition to
-           raw file descriptors.
-        """
+        """更改监听的`fd`事件"""
         raise NotImplementedError()
 
     def remove_handler(self, fd):
-        """Stop listening for events on ``fd``.
-
-        .. versionchanged:: 4.0
-           Added the ability to pass file-like objects in addition to
-           raw file descriptors.
-        """
+        """停止对`fd`的事件监听"""
         raise NotImplementedError()
 
     def set_blocking_signal_threshold(self, seconds, action):
-        """Sends a signal if the `IOLoop` is blocked for more than
-        ``s`` seconds.
-
-        Pass ``seconds=None`` to disable.  Requires Python 2.6 on a unixy
-        platform.
-
-        The action parameter is a Python signal handler.  Read the
-        documentation for the `signal` module for more information.
-        If ``action`` is None, the process will be killed if it is
-        blocked for too long.
-        """
+        """如果`IOLoop`被阻塞了``s``秒后则发送一个信号"""
         raise NotImplementedError()
 
     def set_blocking_log_threshold(self, seconds):
-        """Logs a stack trace if the `IOLoop` is blocked for more than
-        ``s`` seconds.
-
-        Equivalent to ``set_blocking_signal_threshold(seconds,
-        self.log_stack)``
-        """
+        """`IOLoop`被阻塞`s`秒后用日志记录一个堆栈跟踪"""
         self.set_blocking_signal_threshold(seconds, self.log_stack)
 
     def log_stack(self, signal, frame):
-        """Signal handler to log the stack trace of the current thread.
-
-        For use with `set_blocking_signal_threshold`.
-        """
         gen_log.warning('IOLoop blocked for %f seconds in\n%s',
                         self._blocking_signal_threshold,
                         ''.join(traceback.format_stack(frame)))
 
     def start(self):
-        """Starts the I/O loop.
+        """开始 I/O loop.
 
         The loop will run until one of the callbacks calls `stop()`, which
         will make the loop stop after the current event iteration completes.
         """
         raise NotImplementedError()
+
 
     def _setup_logging(self):
         """The IOLoop catches and logs exceptions, so it's

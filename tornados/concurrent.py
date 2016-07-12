@@ -1,3 +1,4 @@
+# coding=utf-8
 #!/usr/bin/env python
 #
 # Copyright 2012 Facebook
@@ -15,11 +16,9 @@
 # under the License.
 """Utilities for working with threads and ``Futures``.
 
-``Futures`` are a pattern for concurrent programming introduced in
-Python 3.2 in the `concurrent.futures` package. This package defines
-a mostly-compatible `Future` class designed for use from coroutines,
-as well as some utility functions for interacting with the
-`concurrent.futures` package.
+``Futures`` 是并发编程的模式中引入Python 3.2 `concurrent.futures` 包.
+这个包定义了基本兼容的 `Future` 类设计用于协同程序,以及一些对于
+`concurrent.futures` 包交互的实用函数
 """
 from __future__ import absolute_import, division, print_function, with_statement
 
@@ -130,40 +129,21 @@ class _TracebackLogger(object):
 
 
 class Future(object):
-    """Placeholder for an asynchronous result.
+    """一个异步结果的占位符(Placeholder)
 
-    A ``Future`` encapsulates the result of an asynchronous
-    operation.  In synchronous applications ``Futures`` are used
-    to wait for the result from a thread or process pool; in
-    Tornado they are normally used with `.IOLoop.add_future` or by
-    yielding them in a `.gen.coroutine`.
+    当concurrent.futures不可用时,模拟Future
 
-    `tornado.concurrent.Future` is similar to
-    `concurrent.futures.Future`, but not thread-safe (and therefore
-    faster for use with single-threaded event loops).
+    A ``Future`` 它封装了一个异步的结果操作。
+    在同步应用中 ``Futures`` 用于等待结果从一个线程或进程池中;
+    在Tornado 他们通常使用`.IOLoop.add_future` 或通过`.gen.coroutine` yield他们。
 
-    In addition to ``exception`` and ``set_exception``, methods ``exc_info``
-    and ``set_exc_info`` are supported to capture tracebacks in Python 2.
-    The traceback is automatically available in Python 3, but in the
-    Python 2 futures backport this information is discarded.
-    This functionality was previously available in a separate class
-    ``TracebackFuture``, which is now a deprecated alias for this class.
+    `tornado.concurrent.Future` 类似于 `concurrent.futures.Future`, 但不是线程安全的
+    (因此能更快的使用单线程的事件循环).
 
-    .. versionchanged:: 4.0
-       `tornado.concurrent.Future` is always a thread-unsafe ``Future``
-       with support for the ``exc_info`` methods.  Previously it would
-       be an alias for the thread-safe `concurrent.futures.Future`
-       if that package was available and fall back to the thread-unsafe
-       implementation if it was not.
-
-    .. versionchanged:: 4.1
-       If a `.Future` contains an error but that error is never observed
-       (by calling ``result()``, ``exception()``, or ``exc_info()``),
-       a stack trace will be logged when the `.Future` is garbage collected.
-       This normally indicates an error in the application, but in cases
-       where it results in undesired logging it may be necessary to
-       suppress the logging by ensuring that the exception is observed:
-       ``f.add_done_callback(lambda f: f.exception())``.
+    除了 ``exception`` 和 ``set_exception``外,  ``exc_info`` 和 ``set_exc_info`` 方法
+    在py2中支持捕获回溯。在 Python 3中回溯自动可用, 但在python 2 futures backport 这个信息被丢弃.
+    这个功能以前可以在一个单独的类中。
+    ``TracebackFuture``, 现在是这个类的弃用别名。
     """
     def __init__(self):
         self._done = False
@@ -175,45 +155,38 @@ class Future(object):
 
         self._callbacks = []
 
-    # Implement the Python 3.5 Awaitable protocol if possible
-    # (we can't use return and yield together until py33).
+    # 实现 Python 3.5 Awaitable 协议如果py33版本可用
+    # (在py33之前是不能将return 和 yield一块使用的).
     if sys.version_info >= (3, 3):
         exec(textwrap.dedent("""
         def __await__(self):
             return (yield self)
         """))
     else:
-        # Py2-compatible version for use with cython.
+        # cython Py2兼用版本.
         def __await__(self):
             result = yield self
-            # StopIteration doesn't take args before py33,
-            # but Cython recognizes the args tuple.
+            # 在py33之前 StopIteration不需要参数,但 Cython recognizes(赞成)参数元祖.
             e = StopIteration()
             e.args = (result,)
             raise e
 
     def cancel(self):
-        """Cancel the operation, if possible.
+        """取消操作,如果可能的话。
 
-        Tornado ``Futures`` do not support cancellation, so this method always
-        returns False.
+        Tornado ``Futures`` 不支持取消, 所以这个方法总返回False
         """
         return False
 
     def cancelled(self):
-        """Returns True if the operation has been cancelled.
-
-        Tornado ``Futures`` do not support cancellation, so this method
-        always returns False.
-        """
         return False
 
     def running(self):
-        """Returns True if this operation is currently running."""
+        """返回True,如果这个操作正在运行."""
         return not self._done
 
     def done(self):
-        """Returns True if the future has finished running."""
+        """返回True 如果future 已经执行完毕."""
         return self._done
 
     def _clear_tb_log(self):
@@ -223,12 +196,10 @@ class Future(object):
             self._tb_logger = None
 
     def result(self, timeout=None):
-        """If the operation succeeded, return its result.  If it failed,
-        re-raise its exception.
+        """如果操作成功返回结果.  失败则触发异常.
 
-        This method takes a ``timeout`` argument for compatibility with
-        `concurrent.futures.Future` but it is an error to call it
-        before the `Future` is done, so the ``timeout`` is never used.
+        ``timeout`` 参数用于兼用`concurrent.futures.Future` 但是在`Future`完成之前调用则会发生错误,
+        所以``timeout`` 从不被使用.
         """
         self._clear_tb_log()
         if self._result is not None:
@@ -239,8 +210,7 @@ class Future(object):
         return self._result
 
     def exception(self, timeout=None):
-        """If the operation raised an exception, return the `Exception`
-        object.  Otherwise returns None.
+        """如果操作触发异常则返回`Exception`对象.  否则返回None.
 
         This method takes a ``timeout`` argument for compatibility with
         `concurrent.futures.Future` but it is an error to call it
@@ -342,6 +312,7 @@ class Future(object):
 
 TracebackFuture = Future
 
+# 是否是Future实例, 同时检查futures.Future和tornado模拟的Future类
 if futures is None:
     FUTURES = Future  # type: typing.Union[type, typing.Tuple[type, ...]]
 else:
@@ -368,21 +339,39 @@ dummy_executor = DummyExecutor()
 
 
 def run_on_executor(*args, **kwargs):
-    """Decorator to run a synchronous method asynchronously on an executor.
+    """异步化执行同步方法的装饰器
 
-    The decorated method may be called with a ``callback`` keyword
-    argument and returns a future.
+    这个在tornado中比较常用, 一般是异步线程池
+    比如在原先的同步的数据库执行的方法添加@concurrent.run_on_executor装饰器使之异步:
 
-    The `.IOLoop` and executor to be used are determined by the ``io_loop``
-    and ``executor`` attributes of ``self``. To use different attributes,
-    pass keyword arguments to the decorator::
+        from concurrent.futures import ThreadPoolExecutor
+
+        class MyAsyncSql(tornado.web.RequestHandler):
+
+            executor = ThreadPoolExecutor(10)       # executor属性, 线程池
+            @tornado.web.asynchronous
+            @tornado.gen.engine
+            def get(self, *args, **kwargs):
+                result = yield tornado.gen.Task(self.runSql)
+                ...
+                self.finish()
+
+            @concurrent.run_on_executor
+            def runSql(self):
+                .....
+
+    可传递 ``callback``关键字
+    返回 future.
+
+    `.IOLoop` 和 executor(执行者) 的使用取决于``self``的``io_loop``和``executor`` 属性.
+    使用不同的属性,通过关键字参数来装饰::
 
         @run_on_executor(executor='_thread_pool')
         def foo(self):
             pass
 
     .. versionchanged:: 4.2
-       Added keyword arguments to use alternative attributes.
+        添加关键字参数使用替代属性。
     """
     def run_on_executor_decorator(fn):
         executor = kwargs.get("executor", "executor")
@@ -390,6 +379,11 @@ def run_on_executor(*args, **kwargs):
 
         @functools.wraps(fn)
         def wrapper(self, *args, **kwargs):
+            """
+            self为执行者的实例对象, 如tornado WebRequestHandler实例
+            getattr(self, executor): 就是获取该对象的executor属性, 见上面注释的代码
+            getattr(self, io_loop): 获取该对象的ioloop
+            """
             callback = kwargs.pop("callback", None)
             future = getattr(self, executor).submit(fn, self, *args, **kwargs)
             if callback:

@@ -1,7 +1,9 @@
-"""``tornado.gen`` is a generator-based interface to make it easier to
-work in an asynchronous environment.  Code using the ``gen`` module
-is technically asynchronous, but it is written as a single generator
-instead of a collection of separate functions.
+# coding=utf-8
+"""``tornado.gen`` 是一个基于生成器(generator-based)接口使之更加容易作用在异步环境
+使用``gen``模块的代码应该是异步的。
+
+它应该是一个单独的生成器,而不是一系列函数。
+也就是说解放了callback回调的噩梦, 使之以同步的方式写异步代码。
 
 For example, the following asynchronous handler:
 
@@ -36,12 +38,11 @@ could be written with ``gen`` as:
 .. testoutput::
    :hide:
 
-Most asynchronous functions in Tornado return a `.Future`;
-yielding this object returns its `~.Future.result`.
+Tornado中多数异步函数返回`.Future`;
+产生(yielding)这个对象返回它 `~.Future.result`.
 
-You can also yield a list or dict of ``Futures``, which will be
-started at the same time and run in parallel; a list or dict of results will
-be returned when they are all finished:
+你也可以 yield a list or dict of ``Futures``,将开始在**同一时间并行执行**;
+当都完成后返回 a list or dict of results。
 
 .. testcode::
 
@@ -58,13 +59,12 @@ be returned when they are all finished:
 .. testoutput::
    :hide:
 
-If the `~functools.singledispatch` library is available (standard in
-Python 3.4, available via the `singledispatch
+如果 `~functools.singledispatch` 库可用 (Python 3.4 标准库,
 <https://pypi.python.org/pypi/singledispatch>`_ package on older
-versions), additional types of objects may be yielded. Tornado includes
-support for ``asyncio.Future`` and Twisted's ``Deferred`` class when
-``tornado.platform.asyncio`` and ``tornado.platform.twisted`` are imported.
-See the `convert_yielded` function to extend this mechanism.
+versions), 其他类型的对象可能产生.
+Tornado 包括支持 ``asyncio.Future`` 和 Twisted's ``Deferred`` 类,当
+``tornado.platform.asyncio`` 和 ``tornado.platform.twisted`` 被导入时.
+`convert_yielded` 函数进行扩展
 
 .. versionchanged:: 3.2
    Dict support added.
@@ -74,6 +74,7 @@ See the `convert_yielded` function to extend this mechanism.
    via ``singledispatch``.
 
 """
+
 from __future__ import absolute_import, division, print_function, with_statement
 
 import collections
@@ -158,15 +159,15 @@ class TimeoutError(Exception):
 
 
 def _value_from_stopiteration(e):
+    """从StopIteration取值"""
     try:
-        # StopIteration has a value attribute beginning in py33.
+        # 在py33后 StopIteration 有value属性
         # So does our Return class.
         return e.value
     except AttributeError:
         pass
     try:
-        # Cython backports coroutine functionality by putting the value in
-        # e.args[0].
+        # Cython backports(补丁) 协程功能通过 putting the value in e.args[0].
         return e.args[0]
     except (AttributeError, IndexError):
         return None
@@ -210,47 +211,38 @@ def engine(func):
 def coroutine(func, replace_callback=True):
     """Decorator for asynchronous generators.
 
-    Any generator that yields objects from this module must be wrapped
-    in either this decorator or `engine`.
+    coroutine 内部委托 `_make_coroutine_wrapper` 完成具体功能
+    `replace_callback` 没有使用的;返回一个 Future 实例对象。
 
-    Coroutines may "return" by raising the special exception
-    `Return(value) <Return>`.  In Python 3.3+, it is also possible for
-    the function to simply use the ``return value`` statement (prior to
-    Python 3.3 generators were not allowed to also return values).
-    In all versions of Python a coroutine that simply wishes to exit
-    early may use the ``return`` statement without a value.
+    Coroutines "return" 通过触发特殊的异常`Return(value) <Return>`.
+    Python 3.3+, 可直接``return value`` 语句 (py3.3之前生成器是不可return values的)。
 
-    Functions with this decorator return a `.Future`.  Additionally,
-    they may be called with a ``callback`` keyword argument, which
-    will be invoked with the future's result when it resolves.  If the
-    coroutine fails, the callback will not be run and an exception
-    will be raised into the surrounding `.StackContext`.  The
-    ``callback`` argument is not visible inside the decorated
-    function; it is handled by the decorator itself.
-
-    From the caller's perspective, ``@gen.coroutine`` is similar to
-    the combination of ``@return_future`` and ``@gen.engine``.
+    从调用者的角度来看, `@gen.coroutine` 类似于`@return_future`和 `@gen.engine`的组合。
 
     .. warning::
 
-       When exceptions occur inside a coroutine, the exception
-       information will be stored in the `.Future` object. You must
-       examine the result of the `.Future` object, or the exception
-       may go unnoticed by your code. This means yielding the function
-       if called from another coroutine, using something like
-       `.IOLoop.run_sync` for top-level calls, or passing the `.Future`
-       to `.IOLoop.add_future`.
+       当异常发生在coroutine内部,异常信息将存储在`.Future` object.
+       你必须检查`.Future`的结果或忽略异常.这意味着如果从另一个协程yielding function, 使用像
+       `.IOLoop.run_sync` 的顶级调用, 或传递`.Future` 到`.IOLoop.add_future`中.
 
     """
     return _make_coroutine_wrapper(func, replace_callback=True)
 
 
 def _make_coroutine_wrapper(func, replace_callback):
-    """The inner workings of ``@gen.coroutine`` and ``@gen.engine``.
+    """``@gen.coroutine`` 和 ``@gen.engine``的内部运作方式.
 
-    The two decorators differ in their treatment of the ``callback``
-    argument, so we cannot simply implement ``@engine`` in terms of
-    ``@coroutine``.
+    `@gen.coroutine` 与 `@gen.engine` 的功能非常相似，
+    差别就在于二者对被装饰方法参数中的 “callback” 参数处理不一样以及具有不同的返回值。
+    `@gen.coroutine` 装饰的方法执行后返回 `Future` 对象并且会将方法参数中的 “callback”
+    加入到 Future 完成后的回调列表中；
+    `@gen.engine` 装饰的方法执行后没有返回值
+    （注：实际上如果被装饰方法有返回值，会抛出 ReturnValueIgnoredError 异常）
+
+    所以，通过 @gen.engine 装饰的方法没有返回值，方法必须自己在异步调用完成后调用 “callback” 来执行回调动作，
+    而通过 @gen.coroutine 装饰的方法则可以直接返回执行结果，然后由 gen 模块负责将结果传递给 “callback” 来执行回调。
+
+    注： 从调用者的角度来看 @gen.coroutine 可以视为 @tornado.concurrent.return_future 与 @gen.engine 的组合。
     """
     # On Python 3.5, set the coroutine flag on our generator, to allow it
     # to be used with 'await'.
@@ -259,8 +251,8 @@ def _make_coroutine_wrapper(func, replace_callback):
 
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
-        future = TracebackFuture()
-
+        future = TracebackFuture()          # Future实例
+        # 处理 “callback”，忽略或者将其加入到 Future 的完成回调列表中。
         if replace_callback and 'callback' in kwargs:
             callback = kwargs.pop('callback')
             IOLoop.current().add_future(
@@ -269,20 +261,25 @@ def _make_coroutine_wrapper(func, replace_callback):
         try:
             result = func(*args, **kwargs)
         except (Return, StopIteration) as e:
+            # 在python 3.3前，generator不能直接通过return返回,
+            # return 被视为 raise StopIteration()，
+            # return <something> 被视为 raise StopIteration(<something>)。
+            # 在 gen 模块中，特别定义了 Return 类型用于返回值：raise gen.Return(something>)
             result = _value_from_stopiteration(e)
         except Exception:
+            # 发生异常，异常被写入 future（将会被设置为完成状态），结束调用，返回 future
             future.set_exc_info(sys.exc_info())
             return future
         else:
             if isinstance(result, GeneratorType):
-                # Inline the first iteration of Runner.run.  This lets us
-                # avoid the cost of creating a Runner when the coroutine
-                # never actually yields, which in turn allows us to
-                # use "optional" coroutines in critical path code without
-                # performance penalty for the synchronous case.
+                # 通过检查 result 是否为 GeneratorType 来选择是否创建 coroutine
+                # 对于同步情况直接 future.set_result(result) 返回，避免创建 coroutine 而
+                # 造成的性能损失.
                 try:
+                    # 通过 next 启动 generator ，启动前记录上下文，启动后对上下文进行一致性检查
                     orig_stack_contexts = stack_context._state.contexts
                     yielded = next(result)
+                    print(yielded)
                     if stack_context._state.contexts is not orig_stack_contexts:
                         yielded = TracebackFuture()
                         yielded.set_exception(
@@ -294,43 +291,35 @@ def _make_coroutine_wrapper(func, replace_callback):
                 except Exception:
                     future.set_exc_info(sys.exc_info())
                 else:
+                    print('run....')
                     Runner(result, future, yielded)
                 try:
+                    print(future)
                     return future
                 finally:
-                    # Subtle memory optimization: if next() raised an exception,
-                    # the future's exc_info contains a traceback which
-                    # includes this stack frame.  This creates a cycle,
-                    # which will be collected at the next full GC but has
-                    # been shown to greatly increase memory usage of
-                    # benchmarks (relative to the refcount-based scheme
-                    # used in the absence of cycles).  We can avoid the
-                    # cycle by clearing the local variable after we return it.
+                    # generator.next() 抛出异常失败后， future 的 exc_info
+                    # 中会包含当前栈帧的引用，栈帧中也有对 future 的引用，这样导致一个环，必须
+                    # 要在下一次 full GC 时才能回收内存。返回 future 后将 future 设置为 None
+                    # 可以优化内存。（注：需要 full GC 是与 python 的垃圾回收实现采用引用计数
+                    # 为主，标记-清除和分代机制为辅相关。python 采用引用计数来立刻释放可以释放
+                    # 的内存，然后用标记-清除的方法来清除循环引用的不可达对象。）
+
                     future = None
+        # 同步情况下，不需要创建 coroutine，直接返回 future。
         future.set_result(result)
+        print(future)
         return future
     return wrapper
 
 
 class Return(Exception):
-    """Special exception to return a value from a `coroutine`.
-
-    If this exception is raised, its value argument is used as the
-    result of the coroutine::
+    """
+    从`coroutine`返回值的特殊异常
 
         @gen.coroutine
         def fetch_json(url):
             response = yield AsyncHTTPClient().fetch(url)
             raise gen.Return(json_decode(response.body))
-
-    In Python 3.3, this exception is no longer necessary: the ``return``
-    statement can be used directly to return a value (previously
-    ``yield`` and ``return`` with a value could not be combined in the
-    same function).
-
-    By analogy with the return statement, the value argument is optional,
-    but it is never necessary to ``raise gen.Return()``.  The ``return``
-    statement can be used with no arguments instead.
     """
     def __init__(self, value=None):
         super(Return, self).__init__()
