@@ -352,7 +352,6 @@ class IOLoop(Configurable):
            Returning a non-``None``, non-yieldable value is now an error.
         """
         future_cell = [None]
-
         def run():
             try:
                 result = func()
@@ -369,10 +368,13 @@ class IOLoop(Configurable):
                     future_cell[0] = TracebackFuture()
                     future_cell[0].set_result(result)
             self.add_future(future_cell[0], lambda future: self.stop())
-        self.add_callback(run)
+
+        self.add_callback(run)      # 将闭包 run添加回调
         if timeout is not None:
             timeout_handle = self.add_timeout(self.time() + timeout, self.stop)
-        self.start()
+
+        self.start()                # 开始io loop
+        # 下面是处理执行结果
         if timeout is not None:
             self.remove_timeout(timeout_handle)
         if not future_cell[0].done():
@@ -519,10 +521,7 @@ class IOLoop(Configurable):
             lambda future: self.add_callback(callback, future))
 
     def _run_callback(self, callback):
-        """Runs a callback with error handling.
-
-        For use in subclasses.
-        """
+        """运行一个回调与错误处理."""
         try:
             ret = callback()
             if ret is not None:
@@ -532,14 +531,14 @@ class IOLoop(Configurable):
                 # makes it out to the IOLoop, ensure its exception (if any)
                 # gets logged too.
                 try:
-                    ret = gen.convert_yielded(ret)
+                    ret = gen.convert_yielded(ret)      # todo
                 except gen.BadYieldError:
                     # It's not unusual for add_callback to be used with
                     # methods returning a non-None and non-yieldable
                     # result, which should just be ignored.
                     pass
                 else:
-                    self.add_future(ret, lambda f: f.result())
+                    self.add_future(ret, lambda f: f.result())  # todo:搞懂add_future
         except Exception:
             self.handle_callback_exception(callback)
 
@@ -606,31 +605,35 @@ class PollIOLoop(IOLoop):
     """
     def initialize(self, impl, time_func=None, **kwargs):
         super(PollIOLoop, self).initialize(**kwargs)
-        self._impl = impl
+        self._impl = impl          # 选择异步事件 kqueue or epoll or select
         if hasattr(self._impl, 'fileno'):
-            set_close_exec(self._impl.fileno())
-        self.time_func = time_func or time.time
-        self._handlers = {}
-        self._events = {}
-        self._callbacks = []
+            set_close_exec(self._impl.fileno())     # fork 后关闭无用文件描述符
+        self.time_func = time_func or time.time     # 时间函数
+        self._handlers = {}                         # handlers字典, fd:event
+        self._events = {}                           # events字典,存储活跃的 fd:event
+        self._callbacks = []                        # 各个fd回调函数列表
         self._callback_lock = threading.Lock()
-        self._timeouts = []
-        self._cancellations = 0
+        self._timeouts = []                         # 最小堆结构，按超时时间从小到大排列的 fd 的任务堆
+                                                    # 通常这个任务都会包含一个 callback
+        self._cancellations = 0                     # timeout 的计数器
+
+        # ioloop状态
         self._running = False
         self._stopped = False
         self._closing = False
-        self._thread_ident = None
-        self._blocking_signal_threshold = None
+        self._thread_ident = None                   # 线程标识
+        self._blocking_signal_threshold = None      # 阻塞信号阈值(秒)
         self._timeout_counter = itertools.count()
 
-        # Create a pipe that we send bogus data to when we want to wake
-        # the I/O loop when it is idle
+        # 创建一个管道(pipe), 当我们想唤醒空闲的I/O循环时, 我们就发送伪造数据(bogus data)
         self._waker = Waker()
+        # 将管道的描述符加入多路复用的IO管理, 绑定读事件和consume()操作
         self.add_handler(self._waker.fileno(),
                          lambda fd, events: self._waker.consume(),
                          self.READ)
 
     def close(self, all_fds=False):
+        """关闭ioloop,做一些关闭操作和清除工作"""
         with self._callback_lock:
             self._closing = True
         self.remove_handler(self._waker.fileno())
@@ -673,39 +676,27 @@ class PollIOLoop(IOLoop):
     def start(self):
         if self._running:
             raise RuntimeError("IOLoop is already running")
-        self._setup_logging()
+        self._setup_logging()           # 设置日志
         if self._stopped:
             self._stopped = False
             return
         old_current = getattr(IOLoop._current, "instance", None)
-        IOLoop._current.instance = self
-        self._thread_ident = thread.get_ident()
+        IOLoop._current.instance = self             # 将当前对象作为IOLoop实例
+        self._thread_ident = thread.get_ident()     # 设置线程标识
         self._running = True
 
-        # signal.set_wakeup_fd closes a race condition in event loops:
-        # a signal may arrive at the beginning of select/poll/etc
-        # before it goes into its interruptible sleep, so the signal
-        # will be consumed without waking the select.  The solution is
-        # for the (C, synchronous) signal handler to write to a pipe,
-        # which will then be seen by select.
+        # 该函数作用:是当一个信号出现时, 设置fd(必须是non-blocking)可写(with '\0')
+        # 这个库常用作唤醒select or poll
+        # 一个信号可能在select/poll/等事件轮询开始前抵达
+        # 在python's 信号处理中, set_wakeup_fd仅仅能作用在主线程, 否则触发ValueError异常).
         #
-        # In python's signal handling semantics, this only matters on the
-        # main thread (fortunately, set_wakeup_fd only works on the main
-        # thread and will raise a ValueError otherwise).
-        #
-        # If someone has already set a wakeup fd, we don't want to
-        # disturb it.  This is an issue for twisted, which does its
-        # SIGCHLD processing in response to its own wakeup fd being
-        # written to.  As long as the wakeup fd is registered on the IOLoop,
-        # the loop will still wake up and everything should work.
         old_wakeup_fd = None
         if hasattr(signal, 'set_wakeup_fd') and os.name == 'posix':
-            # requires python 2.6+, unix.  set_wakeup_fd exists but crashes
-            # the python process on windows.
             try:
                 old_wakeup_fd = signal.set_wakeup_fd(self._waker.write_fileno())
                 if old_wakeup_fd != -1:
-                    # Already set, restore previous value.  This is a little racy,
+                    # 已经设置,恢复以前的值。
+                    # This is a little racy,
                     # but there's no clean get_wakeup_fd and in real use the
                     # IOLoop is just started once at the beginning.
                     signal.set_wakeup_fd(old_wakeup_fd)
@@ -716,9 +707,9 @@ class PollIOLoop(IOLoop):
                 old_wakeup_fd = None
 
         try:
+            # 轮询开始
             while True:
-                # Prevent IO event starvation by delaying new callbacks
-                # to the next iteration of the event loop.
+                # 线程锁处理临界资源, 一次循环处理一批fd回调函数列表
                 with self._callback_lock:
                     callbacks = self._callbacks
                     self._callbacks = []
@@ -727,73 +718,78 @@ class PollIOLoop(IOLoop):
                 # Do not run anything until we have determined which ones
                 # are ready, so timeouts that call add_timeout cannot
                 # schedule anything in this iteration.
-                due_timeouts = []
+                due_timeouts = []       # 存放超时的任务
                 if self._timeouts:
+                    # 获取当前时间，用来判断 _timeouts 里的任务有没有超时
+                    # 循环`_timeouts`列表,`_timeouts` 是heapq 堆, heap[0]总是最小的元素
+                    # 这里第一个数据永远是最接近超时或已超时的, 所以下面只检查第一个元素
                     now = self.time()
                     while self._timeouts:
                         if self._timeouts[0].callback is None:
-                            # The timeout was cancelled.  Note that the
-                            # cancellation check is repeated below for timeouts
-                            # that are cancelled by another timeout or callback.
+                            # 如果任务无回调,取消超时, 将_timeouts列表中第一个元素(最小的)弹出
                             heapq.heappop(self._timeouts)
-                            self._cancellations -= 1
-                        elif self._timeouts[0].deadline <= now:
+                            self._cancellations -= 1            # 超时计数器 －1
+                        elif self._timeouts[0].deadline <= now:  # 判断是否超时
+                            # 超时就弹出并添加到已超时列表里
                             due_timeouts.append(heapq.heappop(self._timeouts))
                         else:
+                            # 因为最小堆，如果没超时就直接退出循环（ 后面的数据必定未超时 ）
                             break
+
+                    # 当超时计数器大于 512 且大于 _timeouts 长度一半时，清零计数器，
+                    # 并剔除 _timeouts 中无 callbacks 的任务
                     if (self._cancellations > 512 and
                             self._cancellations > (len(self._timeouts) >> 1)):
-                        # Clean up the timeout queue when it gets large and it's
-                        # more than half cancellations.
                         self._cancellations = 0
                         self._timeouts = [x for x in self._timeouts
                                           if x.callback is not None]
-                        heapq.heapify(self._timeouts)
+                        heapq.heapify(self._timeouts)     # _timeouts最小堆处理
 
+                # 执行回调列表里的所有回调
                 for callback in callbacks:
-                    self._run_callback(callback)
+                    self._run_callback(callback)        # todo: point
+                # 执行所有超时任务列表里的回调
                 for timeout in due_timeouts:
                     if timeout.callback is not None:
                         self._run_callback(timeout.callback)
-                # Closures may be holding on to a lot of memory, so allow
-                # them to be freed before we go into our poll wait.
-                callbacks = callback = due_timeouts = timeout = None
+                # 闭包可能会持有大量的内存, 所以在我们进入poll wait之前允许它们被释放
+                callbacks = callback = due_timeouts = timeout = None    # 释放内存
 
+                # 设置轮询超时时间
                 if self._callbacks:
-                    # If any callbacks or timeouts called add_callback,
-                    # we don't want to wait in poll() before we run them.
-                    poll_timeout = 0.0
-                elif self._timeouts:
-                    # If there are any timeouts, schedule the first one.
-                    # Use self.time() instead of 'now' to account for time
-                    # spent running callbacks.
+                    poll_timeout = 0.0      # 如果还有任务则立马执行
+                elif self._timeouts:        # 如果有超时任务, 则取最近的(最小堆)超时时间-当前时间
                     poll_timeout = self._timeouts[0].deadline - self.time()
                     poll_timeout = max(0, min(poll_timeout, _POLL_TIMEOUT))
                 else:
-                    # No timeouts and no callbacks, so use the default.
-                    poll_timeout = _POLL_TIMEOUT
+                    poll_timeout = _POLL_TIMEOUT    # 否则是默认 3600.0 s
 
                 if not self._running:
                     break
 
+                # 定时器类型 `ITIMER_REAL` : 按实际时间计时，计时到达将给进程发送SIGALRM信号(闹钟信号)。
+                # setitimer来设置定时器
+                # 当I/O循环阻塞超过 _blocking_signal_threshold 时会发送一个 SIGALRM 信号.
+                # 进入poll之前调用signal.setitimer(signal.ITIMER_REAL, 0, 0)清理定时器，直到
+                # poll返回后重新设置定时器。
                 if self._blocking_signal_threshold is not None:
-                    # clear alarm so it doesn't fire while poll is waiting for
-                    # events.
                     signal.setitimer(signal.ITIMER_REAL, 0, 0)
 
                 try:
-                    event_pairs = self._impl.poll(poll_timeout)
+                    event_pairs = self._impl.poll(poll_timeout)     # 获取返回的活跃事件队
                 except Exception as e:
                     # Depending on python version and IOLoop implementation,
                     # different exception types may be thrown and there are
                     # two ways EINTR might be signaled:
                     # * e.errno == errno.EINTR
                     # * e.args is like (errno.EINTR, 'Interrupted system call')
+                    # poll调用可能会导致进程进入阻塞状态（sleep），这时候进程被某个系统信号唤醒后会引发EINTR错误
                     if errno_from_exception(e) == errno.EINTR:
                         continue
                     else:
                         raise
 
+                # 设置定时器以便在I/O循环阻塞超过预期时间时发送 SIGALRM 信号。
                 if self._blocking_signal_threshold is not None:
                     signal.setitimer(signal.ITIMER_REAL,
                                      self._blocking_signal_threshold, 0)
@@ -802,11 +798,11 @@ class PollIOLoop(IOLoop):
                 # its handler. Since that handler may perform actions on
                 # other file descriptors, there may be reentrant calls to
                 # this IOLoop that modify self._events
-                self._events.update(event_pairs)
+                self._events.update(event_pairs)         # 将活跃事件加入 _events
                 while self._events:
-                    fd, events = self._events.popitem()
+                    fd, events = self._events.popitem()     # 循环弹出事件
                     try:
-                        fd_obj, handler_func = self._handlers[fd]
+                        fd_obj, handler_func = self._handlers[fd]   # 处理事件
                         handler_func(fd_obj, events)
                     except (OSError, IOError) as e:
                         if errno_from_exception(e) == errno.EPIPE:
@@ -817,12 +813,12 @@ class PollIOLoop(IOLoop):
                     except Exception:
                         self.handle_callback_exception(self._handlers.get(fd))
                 fd_obj = handler_func = None
-
         finally:
             # reset the stopped flag so another start/stop pair can be issued
+            # I/O循环结束, 重置`_stopped`状态，清理定时器，将当前IOLoop实例从当前线程移除绑定。
             self._stopped = False
             if self._blocking_signal_threshold is not None:
-                signal.setitimer(signal.ITIMER_REAL, 0, 0)
+                signal.setitimer(signal.ITIMER_REAL, 0, 0)      # 清空 signal alarm
             IOLoop._current.instance = old_current
             if old_wakeup_fd is not None:
                 signal.set_wakeup_fd(old_wakeup_fd)
@@ -853,21 +849,28 @@ class PollIOLoop(IOLoop):
         self._cancellations += 1
 
     def add_callback(self, callback, *args, **kwargs):
-        if thread.get_ident() != self._thread_ident:
-            # If we're not on the IOLoop's thread, we need to synchronize
-            # with other threads, or waking logic will induce a race.
+        if thread.get_ident() != self._thread_ident:        # 判断线程标识的一致性
+            # 如果不在 IOLoop'线程上, 需要与其他线程同步,
+            # 或者唤醒逻辑将引起竞态
             with self._callback_lock:
                 if self._closing:
                     return
-                list_empty = not self._callbacks
+
+                list_empty = not self._callbacks        # fd回调函数列表是否为空
+                # 将callback添加到 _callbacks列表中
                 self._callbacks.append(functools.partial(
-                    stack_context.wrap(callback), *args, **kwargs))
+                    stack_context.wrap(callback), *args, **kwargs))     # todo
                 if list_empty:
-                    # If we're not in the IOLoop's thread, and we added the
-                    # first callback to an empty list, we may need to wake it
-                    # up (it may wake up on its own, but an occasional extra
-                    # wake is harmless).  Waking up a polling IOLoop is
-                    # relatively expensive, so we try to avoid it when we can.
+                    # 如果fd回调list为空,那么肯定non-wake, 如果有元素那ioloop肯定正在poll
+                    # 就无需激活了,所以fd回调列表是否为空是激活与否的先决条件。
+                    # 如果不在 IOLoop's thread, 且我们已经添加了第一个callback到_callbacks空列表中
+                    # 我们需要唤醒它(可能它已经自醒了,但一个偶尔额外的唤醒也是无害的).
+                    # 唤醒一个 polling IOLoop 是代价是相对昂贵, 要尽量避免唤醒
+                    # 这里调用wake()方法, 给ioloop pipe 发送数据,于是乎就触发了多路复用的IO管理
+                    # 对 self._waker的文件描述符的监听, 则唤醒 i/o loop
+                    # 我们可写一个简单的程序, 只是add_callback调用,
+                    # 然后在self._waker.wake()后添加 event_pairs = self._impl.poll(3600)
+                    # 就可监听到_waker文件描述符的活跃事件
                     self._waker.wake()
         else:
             if self._closing:
